@@ -42,7 +42,7 @@ OpenAI SDK will be more developed for OpenAi models than other provider models.
 
 
 
-## Technical Observerations
+## Technical Observations
 An Agent.md could connect to the MUD after multiple spams of shell commands. Due to the non deterministic nature of the AI (and do to my 
 loss of game data at some point) i ran two times the agent, and interestingly the actions were different (one ran a .sh script and adjusted it, the other just spammed shell commands) but both were highly inneficient and nothing that you could run in a "production environment"
 
