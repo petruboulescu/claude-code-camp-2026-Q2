@@ -22,23 +22,23 @@ gather information about how each agent architectures behaves in practice.
 
 ## Technical hypothesis
 Based on our [Ref 1]
-    - An agent file with referenced files eg. AGENT.md,  @~/docs/*.MD   enough for "stateless" tasks (when generating artifacts with a 
+- An agent file with referenced files eg. AGENT.md,  @~/docs/*.MD   enough for "stateless" tasks (when generating artifacts with a 
 well-defined structure, such as Terraform code), but not enough to interract with live systems. You run the risk of not enough (or too much) context, halucinations, or having the user act as a tester for the agent, constantly hand holding
 
-    - Agent Skills driven by main agent eg. ~/.skills  improves the previous architecture by giving extra context to an agent. However the 
+- Agent Skills driven by main agent eg. ~/.skills  improves the previous architecture by giving extra context to an agent. However the 
 context is static, and succeptible to be affected by outside systems.
 
-    - Filesystem Subagent driven by a coding harness or Coding Agent SDK eg. ~/subagents   - valid choice, but requires tasks that can be 
+- Filesystem Subagent driven by a coding harness or Coding Agent SDK eg. ~/subagents   - valid choice, but requires tasks that can be 
 paralelized. For tasks requiring one solid agent, probably not that useful. 
 
-    - AI workflow automation platform eg. n8n - not evaluated yet
+- AI workflow automation platform eg. n8n - not evaluated yet
 
-    - Use a generic AI Agent SDK that leverages plug and plays generic AI packages. - potentiall being locked by changes in the interfaces. e.g 
+- Use a generic AI Agent SDK that leverages plug and plays generic AI packages. - potentiall being locked by changes in the interfaces. e.g 
 OpenAI SDK will be more developed for OpenAi models than other provider models. 
 
-    - Use low level first-party LLM SDKs and write our own agentic loop - considerably more complex than previous solutions
+- Use low level first-party LLM SDKs and write our own agentic loop - considerably more complex than previous solutions
 
-    - Use REST APIs directly, write our own agentic loop                - not evaluated yet
+- Use REST APIs directly, write our own agentic loop                - not evaluated yet
 
 
 
@@ -49,9 +49,9 @@ loss of game data at some point) i ran two times the agent, and interestingly th
  Skills and Subagents preformed accompanied with a script to manage the telnet session. It's very important to note that the login 
 improvement comes from the deterministic Telnet script, not necessarily from Skills or subagents, so i wouldn't be too quick to atribute the improvement to an architecture change They were able to play the MUD, providing an improvement over Agent.md on login side of things, but that's where the party ended. The agent was unable to adapt, kept asking clarification questions, was unfocused, produced less than stellar .md data files (which often forgot to update).
     
-    The result of the run was a dramatic
+ The result of the run was a dramatic
     I've exhausted all viable options. The character is fundamentally trapped in an unnavigable sewer system. This session has reached its end. 
-Let me stop the game and document the lessons learned:
+    Let me stop the game and document the lessons learned:
 
 
 ## Technical Conclusions
@@ -62,6 +62,7 @@ must be implemented outside the prompt layer.
 Observing the state -> record observations -> adjust the state on given obsevations -> Select next action -> execut said action -> record 
 the new state -> Detect loops, failures, or goal completion -> Repeat within an execution budget
 Leaving this entire loop to the model results in inconsistent behaviour and unreliable state tracking as it can be seen in the chaos that world.md is
+
 ### Ideas for next weeks
 - A Telnet session adapter.
 - A parser that converts game responses into structured observations.
