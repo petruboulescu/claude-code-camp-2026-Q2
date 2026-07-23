@@ -4,3 +4,7 @@
 # Environment / secrets
 .env
 .env.local
+
+# Ruby/Bundler
+**/.bundle/
+**/vendor/bundle/
