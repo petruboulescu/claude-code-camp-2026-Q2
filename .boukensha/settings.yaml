@@ -1,7 +1,7 @@
 tasks:
   player:
-    provider: anthropic        # provider name (string)
-    model: claude-haiku-4-5
+    provider: openai
+    model: gpt-5.4-mini
     prompt_override:
       system: true
 mud:
