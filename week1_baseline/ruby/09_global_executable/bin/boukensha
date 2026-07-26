@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+
+require "boukensha_loader"
+
+case ARGV.first
+when "--version", "-v"
+  BoukenshaLoader.version
+when "doctor"
+  BoukenshaLoader.doctor
+when "--help", "-h", "help"
+  puts <<~HELP
+    Usage:
+      boukensha             start the interactive REPL
+      boukensha doctor      check installation and configuration
+      boukensha --version   print the installed version
+      boukensha --help      show this help
+  HELP
+else
+  abort "boukensha: unknown command #{ARGV.first.inspect}. Run boukensha --help." if ARGV.any?
+
+  BoukenshaLoader.load_and_start_repl
+end
