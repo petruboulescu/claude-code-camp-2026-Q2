@@ -1,0 +1,126 @@
+Metadata-Version: 2.4
+Name: boukensha
+Version: 0.9.0
+Summary: A tiny teaching framework for coding harnesses
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pyyaml
+Requires-Dist: python-dotenv
+
+# Step 9 — Install the global `boukensha` command
+
+This step packages Boukensha as a Python application. After installation, you
+can start the REPL by typing `boukensha` from any directory.
+
+## Build and install
+
+Open a terminal outside any active virtual environment and install it for your
+user. Ubuntu provides the interpreter as `python3`, not `python`:
+
+```sh
+cd ~/projects/claude-code-camp-2026-Q2/week1_baseline/python/09_global_executable
+python3 -m pip install --user --force-reinstall .
+```
+
+This installs without `sudo`. Verify the command:
+
+```sh
+boukensha --version
+boukensha doctor
+```
+
+The expected version is `boukensha 0.9.0`.
+
+If your prompt starts with `(.venv)`, either run `deactivate` before the
+user-level installation above, or install only into that virtual environment:
+
+```sh
+python -m pip install --force-reinstall .
+```
+
+Do not combine `--user` with an active virtual environment: its user
+site-packages are intentionally hidden.
+
+If Ubuntu rejects the user install as an “externally managed environment,”
+install the application with `pipx`:
+
+```sh
+sudo apt install pipx
+pipx ensurepath
+pipx install --force .
+```
+
+Open a new terminal after `pipx ensurepath`, or follow the PATH instructions it
+prints.
+
+If the command is not found, obtain Python's user base and add its `bin`
+directory to your shell PATH:
+
+```sh
+python3 -m site --user-base
+export PATH="$(python3 -m site --user-base)/bin:$PATH"
+```
+
+Put the `export` line in `~/.bashrc` or `~/.zshrc` to preserve it for future
+terminals. `boukensha doctor` also reports the actual executable directory and
+whether it is currently on PATH.
+
+## Configure Boukensha
+
+Boukensha reads `~/.boukensharc`. For this repository:
+
+```yaml
+boukensha_dir: ~/projects/claude-code-camp-2026-Q2/.boukensha
+```
+
+`boukensha_dir` contains `.env`, `settings.yaml`, and optional prompt
+overrides. `BOUKENSHA_DIR` is the equivalent one-command override and takes
+precedence over the rc file:
+
+```sh
+BOUKENSHA_DIR=~/projects/claude-code-camp-2026-Q2/.boukensha boukensha
+```
+
+The installed distribution includes a working implementation. During lesson
+development, `boukensha_path` can select another Python snapshot:
+
+```yaml
+boukensha_dir: ~/projects/claude-code-camp-2026-Q2/.boukensha
+boukensha_path: ~/projects/claude-code-camp-2026-Q2/week1_baseline/python/09_global_executable
+```
+
+| Purpose | Environment variable | rc setting | Default |
+|---|---|---|---|
+| Runtime configuration | `BOUKENSHA_DIR` | `boukensha_dir` | `~/.boukensha` |
+| Python implementation | `BOUKENSHA_PATH` | `boukensha_path` | bundled package |
+
+The implementation path must contain `boukensha/__init__.py`; it is unrelated
+to the shell PATH.
+
+## Diagnose and run
+
+```sh
+boukensha doctor
+boukensha
+```
+
+Doctor reports the installed and selected paths, Python and Boukensha
+versions, provider, model, and credential readiness. It never prints a
+credential value. Supported environment keys are `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY`, and `OLLAMA_API_KEY` for Ollama Cloud.
+Local Ollama needs no key.
+
+Inside the REPL, `/help` lists all commands. `/clear` clears conversation
+history, and `/exit` or `/quit` leaves the session.
+
+Command-line forms:
+
+```text
+boukensha
+boukensha doctor
+boukensha --version
+boukensha --help
+```
+
+After rebuilding, reinstall with `--force-reinstall` and use `boukensha
+doctor` to confirm which implementation and executable are active.
