@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")/../07_the_run_dsl"
+python3 examples/example.py
