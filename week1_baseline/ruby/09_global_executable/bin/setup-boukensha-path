@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "rubygems"
+
+shell_name = File.basename(ENV.fetch("SHELL", "bash"))
+shell_file = shell_name == "zsh" ? "~/.zshrc" : "~/.bashrc"
+shell_file = File.expand_path(shell_file)
+marker = "# Added by Boukensha"
+line = %q(export PATH="$(ruby -e 'require "rubygems"; print File.join(Gem.user_dir, "bin")'):$PATH")
+
+existing = File.exist?(shell_file) ? File.read(shell_file) : ""
+
+if existing.include?(line)
+  puts "Boukensha is already configured in #{shell_file}."
+else
+  FileUtils.mkdir_p(File.dirname(shell_file))
+  File.open(shell_file, "a") do |file|
+    file.puts if !existing.empty? && !existing.end_with?("\n")
+    file.puts marker
+    file.puts line
+  end
+  puts "Added Boukensha's executable directory to #{shell_file}."
+end
+
+puts
+puts "Apply it to this terminal now:"
+puts "  source #{shell_file}"
+puts
+puts "Then verify the installation:"
+puts "  boukensha --version"
+puts "  boukensha doctor"
