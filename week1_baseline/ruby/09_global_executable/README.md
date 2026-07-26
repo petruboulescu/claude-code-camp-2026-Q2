@@ -63,6 +63,43 @@ source ~/.bashrc
 This command asks Ruby for its user executable directory, so it continues to
 work when the installed Ruby version changes.
 
+### When both Ruby and Python versions are installed
+
+Both packages install a command named `boukensha`. The shell runs whichever
+executable appears first on `PATH`. Show every installed candidate and identify
+the current default with:
+
+```bash
+type -a boukensha
+boukensha doctor
+```
+
+On the course Ubuntu setup, the implementations can be run explicitly as:
+
+```bash
+~/.local/bin/boukensha
+~/.local/share/gem/ruby/3.3.0/bin/boukensha
+```
+
+For convenient, unambiguous commands, add these aliases to `~/.bash_aliases`:
+
+```bash
+alias boukensha-python="$HOME/.local/bin/boukensha"
+alias boukensha-ruby="$HOME/.local/share/gem/ruby/3.3.0/bin/boukensha"
+```
+
+Reload the aliases in the current terminal, or open a new one:
+
+```bash
+source ~/.bash_aliases
+boukensha-python doctor
+boukensha-ruby doctor
+```
+
+The Ruby version directory can change after a Ruby upgrade. If either path
+differs on your machine, use the corresponding path printed by
+`type -a boukensha`.
+
 ## 3. Configure Boukensha
 
 Boukensha reads `~/.boukensharc`. Create or edit it with:
