@@ -1,11 +1,396 @@
+# Room memory. The agent's knowledge of the world lives in
+# <boukensha dir>/knowledge.sqlite3 — the same path mud_monitor already probes
+# for its /api/v1/health `knowledge_attached` flag. boukensha is the only
+# writer; the monitor attaches it read-only.
+memory:
+  # Pin `move` to the directions the MUD printed on the exits line, so the agent
+  # cannot waste a turn on "Alas, you cannot go that way." Default OFF: the
+  # constraint itself cannot be wrong (it came from the MUD in the same breath
+  # as the room), but tbaMUD's `[ Exits: ]` line omits CLOSED doors, so the pin
+  # would make `open door; east` unreachable in a room we have never opened one
+  # in. Any direction we have ever learned a destination name for is added back;
+  # this flag stays off until that mitigation has been watched for a session.
+  turn_policy: false
+
+# The room survey's own tool slice (it is not a tool the model can call — see
+# below — but it is still permission-scoped).
+tools:
+  room_survey:
+    # `look_candidates` — which nouns in the room prose are worth `look`ing at.
+    # Scored locally by a 41M ONNX model (~7ms/room, $0), NOT by an LLM: a model
+    # trained on the world files' own extra-descriptions beats a paid one at the
+    # task, because supervision beats priors here.
+    # See docs/plans/week_2/look_candidates_runtime.md.
+    look_candidates:
+      # The only knob: `none` turns the model off even when its weights are
+      # installed — for A/B-ing whether this field earns its probes, or for
+      # ruling it out when a room record looks wrong. Missing weights already
+      # degrade to an empty field on their own, so this is not an install flag.
+      #
+      # Threshold and top-k are deliberately NOT settings. They are swept
+      # against held-out rooms at build time and written into the artifact's
+      # manifest.json, so they travel with the weights they were measured on —
+      # pin them here and a rebuild silently decouples the number from its
+      # evidence. Same for model_dir: it is <boukensha dir>/models/look_candidates.
+      extractor: model                      # none | model
+
+    # The survey's own tool slice, default-deny. It is NOT the player's: `look`
+    # appears here and nowhere in `tasks.player.allow`, which is what keeps a
+    # room survey off the model's tool surface entirely. This used to live under
+    # `tasks.room_inspector` because the survey was an LLM subagent; the model
+    # is gone, then the tool went too, and the scoping outlived both.
+    #
+    # `Mud::Hooks` shares this slice, because the hooks and the survey are the
+    # same actor from the MUD's point of view — the code that reads the world
+    # without the player asking it to. Two entries are here for the hooks rather
+    # than the survey:
+    #   poll   — moved OUT of the survey. Inside it, poll ran immediately after
+    #            a command whose own pre-send drain had just emptied the buffer,
+    #            which is why 79% of them came back empty. It now runs between
+    #            the model's response and the first dispatch, the one window
+    #            where the output that arrived during inference still exists.
+    #   score  — `threat` is only meaningful next to the level it was measured
+    #            at, so without a level reading every appraisal is either reused
+    #            forever or never. One call per session.
+    allow:
+      - tbamud__poll
+      - tbamud__look
+      - "tbamud__check(kind: exits|score)"
+      - tbamud__consider
+      - tbamud__examine
+
+  # The walking subsystem behind `move_to` — move_to.md §3, §4.2. It is not a
+  # task (no model, no prompt) and it is not a tool the player can call; it is
+  # the code `move_to` runs, and like the room survey it is permission-scoped.
+  navigation:
+    # Its own slice, default-deny. `tbamud__move` appears HERE and nowhere in
+    # `tasks.player.allow`, exactly as `tbamud__look` does for room_survey.
+    #
+    # It could not simply be deleted from the player's list. The walker used to
+    # dispatch through the PLAYER's registry, so dropping the rule would make
+    # `Registry#tool` never register `move` and the walk would raise
+    # UnknownToolError on step 1. Hiding it behind `turn_policy` fails for a
+    # different reason: the policy is checked on every dispatch and the walk runs
+    # inside a model iteration, so a policy withholding `move` blocks the
+    # subsystem's own steps.
+    allow:
+      - tbamud__move
+      - tbamud__poll
+
+    # The bounded-loop knobs. None of these is a constant in Ruby, because "is
+    # Haiku good enough to pick a frontier" and "how far is too far" are
+    # questions the batch harness answers and it can only sweep them if they are
+    # configuration.
+    limits:
+      # The one that prevents the pre-bootcamp failure. Without it a single
+      # move_to can walk the map, and the player agent has no visibility into it
+      # and no chance to intervene. On hitting it the call returns like an
+      # interrupted route: where it got to, how far it went, and that it stopped
+      # on budget rather than on failure.
+      max_rooms: 12
+      # Bounds SPEND rather than distance. The two run away independently — a
+      # long corridor is many rooms and one decision, a dense town is few rooms
+      # and many decisions.
+      max_decisions: 6
+      # How stale a direction is allowed to get. Walk the whole way on one
+      # decision and you re-derive the chessboard failure of session
+      # 20260728T190719Z-d2fa7ec6; re-plan every step and you have rebuilt the
+      # per-move model call this design exists to remove.
+      max_steps_per_leg: 4
+      # A GATE, not a classifier (§5.7). Below this the scope question is not put
+      # to the navigator at all — the fields are simply absent from its payload.
+      # boundaries_revised deliberately refuses to code a threshold ("the
+      # judgement is the model's"), and a gate is a different thing from a
+      # decision: it suppresses obvious negatives without encoding the
+      # judgement.
+      min_rooms_for_scope_check: 3
+      # Steps that did not land: a refusal, or a walk into a room that could not
+      # be identified. Neither is a reason to hand the turn back — the map and
+      # the world have disagreed, the hook has already spent a `look` settling
+      # which was wrong, and re-planning against the corrected map costs this
+      # call nothing. Returning instead is what made session
+      # 20260730T201603Z-ff25f010 spend twenty consecutive model calls walking
+      # into the same wall. Non-zero, and small: two distinguishes a stale map
+      # from a way that is simply shut.
+      max_setbacks: 2
+
+      # --- survey mode (claims.md, surveyor_architecture.md) -----------------
+      # A survey walks further than a trip to the bakery, so it gets its own
+      # ceilings rather than borrowing the travel ones. These bound RESOURCES;
+      # they no longer describe intent, which is the difference between them and
+      # the `min_rooms` floor the superseded design used to judge completion by.
+      # Completion is now the condition that no open claim has a decisive test
+      # left within budget, and that is computed rather than configured.
+      survey_max_rooms: 30
+      survey_max_legs: 14
+      # Surveyor calls, which run away from legs independently: the surveyor is
+      # called only when a leg discovered a room or settled a claim, so a dense
+      # interior can consume several legs and no calls at all.
+      survey_max_reasoner_calls: 8
+      # How many claims may be open at once. Over the cap the lowest-priority
+      # ones are PARKED — kept, with their evidence, and eligible to come back
+      # when budget frees — rather than dropped.
+      max_open_claims: 6
+      # The `composition` saturation rule: rooms spent since the observed class
+      # list last grew, after which the survey has seen enough kinds of place.
+      # claims.md flags this as the number most needing calibration against real
+      # sessions, because setting it badly reproduces the arbitrariness of
+      # `min_rooms` in a less legible form. It is here, and not in Ruby, so the
+      # batch harness can sweep it.
+      survey_saturation_rooms: 6
+      # Travel's `max_setbacks`, for the mode that meets more of them. A survey
+      # walks at the edge of what is mapped on purpose, and roughly one move in
+      # twenty is refused in ordinary play, so a survey that gave up on the
+      # first shut door could never achieve coverage on a map that has one.
+      survey_max_setbacks: 4
+
+      # How many MUD moves the walker may spend getting out of a room it cannot
+      # identify, once the reverse of the step that got it there has itself been
+      # refused. Moves rather than rooms, because a refused direction costs a round
+      # trip and no movement — see blind_step_recovery.md §5.5.
+      #
+      # Six against the ten canonical directions: enough to prove an ordinary
+      # sealed room sealed, not enough to wander a maze. Every step is one MUD
+      # round trip and no model call, which is the trade being made — session
+      # 20260731T151434Z-737a23cb spent seventeen model calls and roughly 6,000
+      # input tokens each discovering that `move_to` would not move it, and this
+      # is what it costs to answer that question in MUD calls instead. Zero turns
+      # the sweep off entirely and restores that session's behaviour.
+      max_blind_steps: 6
+
+    # Whether the navigator's `place` field is allowed to WRITE. false keeps the
+    # field in the schema and out of the store, which is §9 step 5's observation
+    # window — read the answers in the logs before anything acts on them. It is
+    # on, because renaming is the safe half: it clears an unconfirmed label and
+    # creates no boundary.
+    act_on_place: true
+
 tasks:
+  # Tier 2 of the batch test harness (docs/plans/week_3/batch_sesssion_testing.md
+  # §6.1): reads a trace digest of one case and answers whether the agent did
+  # what the scenario's rubric asked. It is a task like any other, so swapping
+  # its model is config-only — which matters, because "how strong must a judge
+  # be" is settled by the cost attribution in the report, not by an argument.
+  #
+  # Starting position: Sonnet judging Haiku. A judge weaker than the player is
+  # not credible; a judge as strong as the player is most of the run's cost.
+  #
+  # No `allow:` block, and none is wanted: the judge reads text and answers
+  # JSON. The harness runs it with `tools: false` so it never opens a second
+  # telnet login for tools it cannot use.
+  judge:
+    provider: openai
+    # Must be one the backend actually knows — `Backends::Anthropic::MODELS`
+    # is an allowlist with a price row per entry, not a passthrough, so a model
+    # it has never heard of fails at construction with no cost attribution
+    # possible. Today that list is: claude-haiku-4-5, claude-opus-4-8,
+    # claude-sonnet-4-6.
+    model: gpt-5.4
+    max_iterations: 1
+    # Enough for the verdict object with one entry per rubric line. A judge
+    # that runs out of tokens mid-JSON is recorded as an error, never as a
+    # silent pass — but it is cheaper to give it room than to retry it.
+    max_output_tokens: 2048
+
+  # One frontier decision inside one `move_to` call — move_to.md §2, §4.2.
+  #
+  # It exists because exit NAMES carry meaning and `plan_route`'s ordering does
+  # not: its own output says the ranking "knows nothing about what these names
+  # mean — you do." In `find_bakery_cold` the judge passed the agent specifically
+  # for choosing south (The Temple Square) over north (By The Temple Altar); in
+  # session 20260728T190719Z-d2fa7ec6 the agent took the first listed exit
+  # repeatedly and walked through the altar into The Great Field and onto a
+  # chessboard two zones outside Midgaard before running out of tokens. The
+  # judgement is real in both directions.
+  #
+  # No `allow:` block, and none is wanted: it has no tools. It reads a payload
+  # and answers with fields, which is §5.2's whole point — a field the answer
+  # must contain cannot be skipped the way a tool it may call can be.
+  #
+  # Haiku, matching the player. Whether a frontier choice needs more than that is
+  # a config change and a batch run.
+  navigator:
+    provider: openai
+    model: gpt-5.4-mini
+    # One turn: read the candidates, answer with a direction. This is what keeps
+    # it a judgement and not a second agent — it has no tools and nothing to
+    # iterate on. Same posture as `tasks.judge.max_iterations`.
+    max_iterations: 1
+    # A direction, a sentence of reasoning, the two region fields, and the
+    # boolean that says whether the direction just chosen leaves the region
+    # (staying_in_town.md §10.3).
+    max_output_tokens: 384
+    prompt_override:
+      system: true
+
+  # Where does the new place begin? — §5.4, §5.5.
+  #
+  # Fires ONLY when the navigator raises `scope_suspect` above
+  # `tools.navigation.limits.min_rooms_for_scope_check`, so it is the one place a
+  # stronger model would be affordable. Starting equal to the navigator;
+  # find_mayor_split is the case that settles whether it needs more.
+  #
+  # Delete this block to leave splitting alone entirely: the subsystem builds no
+  # cartographer when it is absent, and the navigator's `scope_suspect` then only
+  # ever reaches the journal. That is §9 step 7's off switch, and it matters
+  # because §7.6 makes a wrong boundary durable.
+  cartographer:
+    provider: openai
+    model: gpt-5.4-mini
+    max_iterations: 1
+    # A room id, a label, and the reasoning for the boundary — or a refusal.
+    max_output_tokens: 512
+    prompt_override:
+      system: true
+
+  # The claim ledger's keeper — claims.md, surveyor_architecture.md.
+  #
+  # It runs for `move_to(survey:)` and never for travel. It does NOT choose a
+  # frontier: it opens, revises, parks and retires claims, and deterministic
+  # code scores every unexplored exit against the open ones. That split is what
+  # makes survey behaviour reproducible — the same ledger and the same map
+  # always produce the same next leg — and it is why a surveyor failure
+  # mid-survey is survivable, where a mid-survey failure of the superseded
+  # design removed the only component able to move at all.
+  #
+  # Delete this block and survey mode is not offered: `move_to` says so plainly
+  # and travel is untouched. That is the observation window, and it matters
+  # because the claim tables are durable and a confidently wrong ledger would be
+  # inherited by every later survey of the same region.
+  #
+  # Sonnet rather than Haiku, and this is the one place in the movement
+  # subsystem where the extra cost is defensible. The navigator answers a
+  # one-shot question about four exit names; the surveyor is deciding what a
+  # whole investigation is FOR, and its output persists across sessions. It is
+  # also called a handful of times per survey rather than once per leg.
+  surveyor:
+    provider: openai
+    model: gpt-5.4
+    max_iterations: 1
+    # Larger than the navigator's 384 by some way: the answer is a set of ledger
+    # operations with statements, decisive tests and evidence notes, and a
+    # surveyor that runs out of tokens mid-JSON has its whole answer discarded.
+    max_output_tokens: 2048
+    prompt_override:
+      system: true
+
   player:
     provider: openai
     model: gpt-5.4-mini
+    #provider: gemini 
+    #model: gemini-3.5-flash
+    #provider: ollama_cloud 
+    #model: gemma4:31b-cloud
+    #provider: ollama
+    #model: gemma4
+    #provider: openai
+    #model: gpt-5.4-mini
     prompt_override:
       system: true
-mud:
-  host: localhost
-  port: 4000
-  username: dummy
-  password: helloworld
+    # Pure allowlist (default-deny): the player may call ONLY these. `look` is
+    # absent — the agent is TOLD where it is before every model call and never
+    # has to ask — and `check` is pinned to every kind EXCEPT exits and score.
+    # Each rule is validated against the tool's own enum at startup. Rule names
+    # are explicitly prefixed (`tbamud__...`) to match the mud server's
+    # `prefix:` below exactly, rather than relying on bare-name matching across
+    # servers.
+    #
+    # `score` is denied here and allowed in the survey slice above, because the
+    # hook maintains the sheet: it reads score at process start and re-reads it
+    # whenever a level-up, a kill, a death or a shop visit has invalidated it
+    # (Mud::Hooks::SCORE_STALE_TOOLS). A manual check could therefore only ever
+    # duplicate a reading the agent has already been given in its `you:` line —
+    # which is exactly what the sampled session spent its first 1.9 seconds on.
+    # The other `check` kinds stay: inventory, equipment, weather and the rest
+    # are real gameplay queries with no hook maintaining them.
+    #
+    # There are no native tools here any more. `inspect_room` used to be one;
+    # the state block replaced it, and the tool surface shrank by one.
+    allow:
+      # ONE movement tool, and the whole of move_to.md §3 is the argument for it.
+      # `plan_route`, `execute_route` and `tbamud__move` are all still registered
+      # — `plan_route` and the region tools natively, `move` over MCP — and none
+      # of them is on this list, so `Registry#tool` never puts them on the
+      # model's surface. The walker reaches `move` through
+      # `tools.navigation.allow` instead.
+      #
+      # The agent had three ways to move and in the cold case only the worst one
+      # was usable: `execute_route` needs a path `plan_route` has called `known`,
+      # and in an unmapped world `plan_route` answers `unknown` with a frontier
+      # listing and no path. There were no steps to pass, so the agent fell back
+      # to `move` and paid one full model call per room — 97.6% of session
+      # 20260729T182950Z-c79e9b97's spend was re-sending context.
+      - move_to
+      # The two region declarations (boundaries_revised.md §2). Native tools,
+      # zero MUD I/O — they write the agent's own conclusion about where it is
+      # to the one place routing can read it back from.
+      #
+      # They stay, and they are no longer the ONLY route to a region: the
+      # navigator now answers `place` and `scope_suspect` as required fields and
+      # the subsystem applies them (§5.3, §5.4). These remain for the case the
+      # navigator cannot see — the agent working out what a place is from
+      # something an NPC said rather than from an exit name.
+      - name_region
+      - split_region
+      - tbamud__consider
+      - tbamud__examine
+      #- tbamud__flee
+      #- tbamud__set_position
+      #- tbamud__track
+      #- tbamud__attack
+      #- tbamud__skill_strike
+      #- "tbamud__check(kind: inventory|equipment|gold|time|weather|levels|wimpy|toggle|where)"
+      #- tbamud__say
+      #- tbamud__tell
+      # - tbamud__channel_say
+      #- tbamud__get_item
+      #- tbamud__drop_item
+      #- tbamud__put_item
+      #- tbamud__equip_item
+      #- tbamud__consume_item
+      #- tbamud__use_magic_item
+      #- tbamud__cast_spell
+      - tbamud__shop
+      #- tbamud__practice
+      #- tbamud__save_character
+      #- tbamud__send_raw
+      - tbamud__poll
+      #- tbamud__mud_status - agent should never need to do this, it should be in hook.
+# EVERY tool the agent has comes from this block. boukensha ships none of its
+# own — it is an MCP host, and an empty mcp_servers means an agent that can
+# only talk. Each entry is one server process: command + args + env, the same
+# stdio transport config every MCP host uses.
+mcp_servers:
+  # The MUD. `mud` is not special to boukensha any more — it's just the server
+  # that happens to know telnet and the login dance. Credentials travel by
+  # environment because that is what the stdio transport gives you; the LLM
+  # never sees them, and the session lives in the daemon.
+  #
+  # `command`/`args` are resolved by the OS against the shell's cwd — NOT
+  # against boukensha_dir/boukensha_path from ~/.boukensharc, and boukensha
+  # never chdirs for you. A relative path here only works when you happen to
+  # launch from the repo root. Nothing hunts for the binary on your behalf any
+  # more — that discovery logic died with Tools::McpMud, which is the trade
+  # for the agent not knowing what a MUD is. `mud-manager` is installed on
+  # PATH (the mud_manager gem), so we call it directly instead.
+  # This entry is `required` (the default), so a bad path fails loudly at boot.
+  mud:
+    command: mud-manager
+    args:    [--mcp]
+    prefix:  tbamud          # the daemon's `look` reaches the agent as tbamud__look
+    env:
+      MUD_HOST:     localhost
+      MUD_PORT:     4000
+      # Player identity, password, and runtime log paths are supplied from the
+      # selected profile. Keep only server-wide connection settings here.
+
+  # Files. A third-party server nobody wrote boukensha code for — which is the
+  # whole point: file access is a server you plug in, not a feature the agent
+  # was born with. Edit the last arg to change what it can reach.
+  #
+  # required: false so a missing npx is a warning, not a dead agent.
+  filesystem:
+    command:  npx
+    args:     [-y, "@modelcontextprotocol/server-filesystem", /tmp]
+    prefix:   fs
+    required: false
