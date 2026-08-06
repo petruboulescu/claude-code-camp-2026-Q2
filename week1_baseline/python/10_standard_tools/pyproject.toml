@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boukensha"
+dynamic = ["version"]
+description = "A tiny teaching framework for coding harnesses"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pyyaml", "python-dotenv"]
+
+[project.scripts]
+boukensha = "boukensha_cli:main"
+
+[tool.setuptools]
+py-modules = ["boukensha_cli", "boukensha_loader"]
+packages = [
+  "boukensha",
+  "boukensha.backends",
+  "boukensha.mcp",
+  "boukensha.tasks",
+  "boukensha.tools",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "boukensha.version.VERSION"}
+
+[tool.setuptools.package-data]
+boukensha = ["prompts/*.md"]
