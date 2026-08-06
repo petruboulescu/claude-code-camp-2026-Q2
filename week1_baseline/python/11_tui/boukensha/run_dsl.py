@@ -1,0 +1,314 @@
+import os
+import sys
+
+from .agent import Agent
+from .backends import Anthropic, Gemini, Ollama, OllamaCloud, OpenAI
+from .client import Client
+from .config import Config
+from .context import Context
+from .logger import Logger
+from .prompt_builder import PromptBuilder
+from .repl import Repl
+from .registry import Registry
+from .tasks import PLAYER
+from .version import VERSION
+from .tools import mcp as mcp_tools
+
+
+class RunDSL:
+    """The deliberately small tool-registration surface used by ``run``."""
+
+    def __init__(self, registry):
+        self._registry = registry
+
+    def tool(self, name, *, description, parameters=None, func=None):
+        """Register ``func`` directly, or return a registration decorator."""
+
+        def register(candidate):
+            if not callable(candidate):
+                raise TypeError("tool function must be callable")
+            self._registry.tool(
+                name,
+                description=description,
+                parameters=parameters,
+                func=candidate,
+            )
+            return candidate
+
+        if func is None:
+            return register
+        return register(func)
+
+    @property
+    def tool_names(self):
+        return self._registry.tool_names
+
+
+def _build_backend(*, provider, api_key, model, ollama_host):
+    if provider == "anthropic":
+        return Anthropic(api_key=api_key, model=model)
+    if provider == "openai":
+        return OpenAI(api_key=api_key, model=model)
+    if provider == "gemini":
+        return Gemini(api_key=api_key, model=model)
+    if provider == "ollama":
+        return Ollama(host=ollama_host, model=model)
+    if provider == "ollama_cloud":
+        return OllamaCloud(api_key=api_key, model=model)
+
+    accepted = "anthropic, openai, gemini, ollama, or ollama_cloud"
+    raise ValueError(
+        f"Unknown backend {provider!r}. Use {accepted}."
+    )
+
+
+def _default_api_key(provider):
+    environment_keys = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "ollama_cloud": "OLLAMA_API_KEY",
+    }
+    key = environment_keys.get(provider)
+    return os.environ.get(key) if key is not None else None
+
+
+def _close_mcp_clients(clients):
+    for client in reversed(clients):
+        client.close()
+
+
+def _register_mcp_servers(registry, cfg, *, stderr=None):
+    """Eagerly register configured servers and return summary plus owners."""
+    stderr = sys.stderr if stderr is None else stderr
+    summary = {}
+    clients = []
+    try:
+        for name, entry in getattr(cfg, "mcp_servers", {}).items():
+            try:
+                client = mcp_tools.register(
+                    registry,
+                    command=entry["command"],
+                    args=entry["args"],
+                    env=entry["env"],
+                    prefix=entry["prefix"],
+                )
+            except mcp_tools.CollisionError:
+                raise
+            except Exception as error:
+                if entry["required"]:
+                    raise RuntimeError(
+                        f"boukensha: MCP server {name!r} failed to start: {error}"
+                    ) from error
+                print(
+                    f"[boukensha] optional MCP server {name!r} failed to start: "
+                    f"{error} — continuing without its tools",
+                    file=stderr,
+                )
+                continue
+            clients.append(client)
+            summary[name] = len(client.tools)
+    except BaseException:
+        _close_mcp_clients(clients)
+        raise
+    return summary, clients
+
+
+def run(
+    *,
+    task,
+    system=None,
+    model=None,
+    backend=None,
+    api_key=None,
+    ollama_host="http://localhost:11434",
+    log=None,
+    max_output_tokens=None,
+    working_dir=None,
+    configure=None,
+):
+    """Assemble and run the player agent from a concise public entry point."""
+
+    # Imported lazily to avoid the package/submodule ``config`` name collision
+    # while boukensha.__init__ is still being initialized.
+    import boukensha
+
+    cfg = boukensha.config()
+    task_settings = cfg.tasks(PLAYER.name)
+
+    if system is None:
+        system = PLAYER.system_prompt(
+            task_settings,
+            user_prompts_dir=cfg.user_prompts_dir,
+            default_prompts_dir=Config.PROMPTS_DIR,
+        )
+    if model is None:
+        model = PLAYER.model(task_settings)
+    if backend is None:
+        backend = PLAYER.provider(task_settings)
+    if api_key is None:
+        api_key = _default_api_key(backend)
+
+    context = Context(
+        task=PLAYER,
+        system=system,
+        working_dir=os.getcwd() if working_dir is None else working_dir,
+    )
+    registry = Registry(context)
+    mcp_clients = []
+    logger = None
+    try:
+        _servers, mcp_clients = _register_mcp_servers(registry, cfg)
+        if configure is not None:
+            if not callable(configure):
+                raise TypeError("configure must be callable")
+            configure(RunDSL(registry))
+
+        resolved_backend = _build_backend(
+            provider=backend,
+            api_key=api_key,
+            model=model,
+            ollama_host=ollama_host,
+        )
+        builder = PromptBuilder(context, resolved_backend)
+        client = Client(builder)
+        effective_max_iterations = PLAYER.max_iterations(task_settings)
+        effective_max_output_tokens = (
+            PLAYER.max_output_tokens(task_settings)
+            if max_output_tokens is None
+            else max_output_tokens
+        )
+        logger = Logger(
+            log=log,
+            snapshot={
+                "task": PLAYER.name,
+                "max_iterations": effective_max_iterations,
+                "max_output_tokens": effective_max_output_tokens,
+                "model": model,
+                "provider": backend,
+            },
+        )
+        agent = Agent(
+            context=context,
+            registry=registry,
+            builder=builder,
+            client=client,
+            logger=logger,
+            task_settings=task_settings,
+            max_iterations=effective_max_iterations,
+            max_output_tokens=effective_max_output_tokens,
+        )
+        context.add_message("user", task)
+        return agent.run()
+    finally:
+        if logger is not None:
+            logger.close()
+        _close_mcp_clients(mcp_clients)
+
+
+def repl(
+    *,
+    system=None,
+    model=None,
+    backend=None,
+    api_key=None,
+    ollama_host="http://localhost:11434",
+    log=None,
+    max_output_tokens=None,
+    working_dir=None,
+    configure=None,
+    tui=True,
+):
+    """Assemble and start an interactive player-agent session."""
+
+    import boukensha
+
+    cfg = boukensha.config()
+    task_settings = cfg.tasks(PLAYER.name)
+
+    if system is None:
+        system = PLAYER.system_prompt(
+            task_settings,
+            user_prompts_dir=cfg.user_prompts_dir,
+            default_prompts_dir=Config.PROMPTS_DIR,
+        )
+    if model is None:
+        model = PLAYER.model(task_settings)
+    if backend is None:
+        backend = PLAYER.provider(task_settings)
+    if api_key is None:
+        api_key = _default_api_key(backend)
+
+    context = Context(
+        task=PLAYER,
+        system=system,
+        working_dir=os.getcwd() if working_dir is None else working_dir,
+    )
+    registry = Registry(context)
+    mcp_clients = []
+    logger = None
+    try:
+        servers, mcp_clients = _register_mcp_servers(registry, cfg)
+        if configure is not None:
+            if not callable(configure):
+                raise TypeError("configure must be callable")
+            configure(RunDSL(registry))
+
+        resolved_backend = _build_backend(
+            provider=backend,
+            api_key=api_key,
+            model=model,
+            ollama_host=ollama_host,
+        )
+        builder = PromptBuilder(context, resolved_backend)
+        client = Client(builder)
+        effective_max_iterations = PLAYER.max_iterations(task_settings)
+        effective_max_output_tokens = (
+            PLAYER.max_output_tokens(task_settings)
+            if max_output_tokens is None
+            else max_output_tokens
+        )
+        logger = Logger(
+            log=log,
+            snapshot={
+                "task": PLAYER.name,
+                "max_iterations": effective_max_iterations,
+                "max_output_tokens": effective_max_output_tokens,
+                "model": model,
+                "provider": backend,
+            },
+        )
+        try:
+            session = Repl(
+                context=context,
+                registry=registry,
+                builder=builder,
+                client=client,
+                logger=logger,
+                task_settings=task_settings,
+                max_iterations=effective_max_iterations,
+                max_output_tokens=effective_max_output_tokens,
+                config_dir=cfg.dir,
+                provider=backend,
+                model=model,
+                version=VERSION,
+                api_key=api_key,
+                servers=servers,
+            )
+            if tui:
+                try:
+                    from .tui import Tui
+                except ImportError as error:
+                    raise RuntimeError(
+                        "The terminal UI requires Textual. Install this step's "
+                        "dependencies or run boukensha --no-tui."
+                    ) from error
+                return Tui(session).start()
+            return session.start()
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            return None
+    finally:
+        if logger is not None:
+            logger.close()
+        _close_mcp_clients(mcp_clients)
