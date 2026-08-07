@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+bin_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+step_dir="$(cd -- "$bin_dir/../12_context" && pwd)"
+
+# Always load the final context-management snapshot, independent of cwd or an
+# installed Boukensha version. User configuration and API-key variables remain
+# untouched.
+export BOUKENSHA_PATH="$step_dir"
+
+python_bin="${PYTHON:-python3}"
+
+if ! "$python_bin" -c "import textual" >/dev/null 2>&1; then
+  cat >&2 <<EOF
+boukensha: Textual is not installed for $python_bin.
+
+Install this step's declared dependencies, then launch again:
+  "$python_bin" -m pip install -r "$step_dir/requirements.txt"
+EOF
+  exit 1
+fi
+
+exec "$python_bin" "$step_dir/boukensha_cli.py" "$@"
