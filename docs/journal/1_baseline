@@ -1,0 +1,100 @@
+# Week 1 Baseline Technical Documentation
+
+## Technical Goal
+The technical goal of Week 1 (Baseline) was to pick up an existing Ruby agent, understand how it works, and port it to Python while preserving its behaviour.
+
+After Preweek showed that prompts, Skills and Subagents are not by themselves a reliable runtime architecture for a stateful environment, the next step was to investigate the lower level pieces of an agent. Instead of treating the agent as one large application, I split it into incremental snapshots and added one capability at a time. Every Ruby snapshot was followed by the equivalent Python port.
+
+The final goal was not only to have two working implementations, but to understand which parts are language-specific and which parts represent the actual agent architecture. Since neither Ruby nor Python is my main language, a Java port will also be prepared. This should provide a more familiar implementation for comparison and help confirm that the architecture is not accidentally shaped around either scripting language.
+
+
+[Ref 1] Baseline steps
+- Configuration and task settings
+- The agent data structures: Context, Message and Tool
+- Tool Registry
+- Prompt Builder
+- API Client and provider backends
+- The agentic loop
+- Structured Logger
+- A high level run DSL
+- REPL loop
+- Global executable
+- Standard Tool Library, later replaced by MCP tools
+- Terminal UI
+- Context window management and compaction
+
+
+## Technical hypothesis
+Based on the Preweek conclusions and [Ref 1]
+
+- A useful agent can be implemented as a relatively small code-driven loop. The model should decide the next action, while code should own tool execution, state transitions, limits and error handling.
+
+- Porting the agent to another language should expose accidental coupling. If the same architecture can be reproduced in Python without copying Ruby idioms literally, then the important part is the contracts between components and not the implementation language.
+
+- Building the agent incrementally should make the architecture easier to investigate. A complete coding agent contains too many interacting pieces to understand at once, while snapshots allow each new behaviour to be isolated.
+
+- Tools should not be compiled into the agent. A generic host which discovers tools from MCP servers should be easier to extend and safer to reason about than an agent containing filesystem, shell and MUD behaviour directly.
+
+- Logging and execution budgets are part of the runtime and not optional debugging features. Without structured traces, iteration limits and token limits it is difficult to distinguish model failure from tool, provider or environment failure.
+
+- Context is state, but context is not the same as memory. Keeping every message forever will eventually exceed the provider window, while blindly deleting messages loses information required by later decisions.
+
+
+## Technical Observations
+The implementation was completed in 13 Ruby/Python pairs. It started with configuration and the basic structs, then added the Registry, Prompt Builder, API Client and the actual agent loop. After that came the operational parts: JSONL logging, the run DSL, REPL, global executable, tools, TUI and finally explicit context management.
+
+Writing the Ruby version first and the Python port second worked well as an investigation method. Ruby's blocks made the run DSL and tool registration compact, while Python naturally used callbacks and decorators. Trying to reproduce the syntax exactly would have produced an unnatural Python interface. Preserving behaviour and component boundaries was more important than line-by-line translation.
+
+The central loop remained small in concept:
+
+Observe the current Context -> build a provider-specific request -> ask the model -> normalize the response -> execute requested tools -> append tool results -> repeat until completion or an execution limit
+
+Most of the complexity was outside that loop. Anthropic, OpenAI, Gemini, Ollama and Ollama Cloud use different request formats, tool schemas, stop reasons, usage fields and reasoning formats. A common internal response made the rest of the agent independent from these differences. This became especially visible when OpenAI had to move from Chat Completions to the Responses API.
+
+The Registry proved to be an important boundary. It gives the model a schema, maps a tool name back to executable code and returns failures as observations which the model can recover from. However, the first standard tool library coupled the agent to filesystem, shell and MUD implementations. Replacing those built-in tools with MCP changed Boukensha into a host: an empty MCP configuration can only talk, while capabilities are added by configuration and separate processes. Prefixes also prevent two servers from silently registering the same tool name.
+
+The logger made failures much less ambiguous. JSONL events record prompts, responses, tool calls, tool results, reasoning, limits and turn completion. Earlier live MUD runs showed connection refused and login timeout failures. These were environment/tool failures rather than mysterious model behaviour. In the final Python run the agent discovered 40 tools from the MUD and filesystem MCP servers, called `tbamud__check`, and correctly reported the character in room 1204, The Immortal Board Room. This is a considerable improvement over the Preweek agent spamming an unmanaged Telnet session.
+
+For example, the session log recorded the failed MUD connection as a structured tool result, including the tool, error type and exact time:
+
+```json
+{"phase":"tool_result","name":"tbamud__check","result":"error: error [connection_error]: connect localhost:4000 failed: Connection refused - connect(2) for \"localhost\" port 4000","ok":true,"error":null,"session_id":"20260804T180831Z-c67cd985","at":"2026-08-04T21:08:47+03:00"}
+```
+
+This made it clear that the model selected the expected `tbamud__check` tool, while the failure happened in the connection to the MUD. A later session recorded the same tool returning room 1204 successfully, allowing the model to report The Immortal Board Room.
+
+The TUI was more complex than expected because an agent turn is not a normal request/response interface. Model calls and MCP tools can block, log events arrive while work is running, cancellation is cooperative, and only the UI thread should update widgets. The plain REPL remained useful both as a fallback and as a simpler interface for testing the runtime.
+
+Context accounting also needed two separate measurements. `current_tokens` represents how much of the model context window the next request occupies, while `turn_tokens` represents the cumulative input and output spent during the current turn. Treating cumulative session usage as context pressure gives an incorrect value, especially after clearing or compacting messages.
+
+The final baseline adds automatic compaction at 85 percent, a manual `/compact` command, colour warnings, model-specific context windows, `max_iterations` and `max_turn_tokens`. The compaction policy is intentionally mechanical: it drops the oldest 40 percent of messages while keeping at least two. This prevents an immediate context overflow, but it is not yet proper long-term memory because removed observations are not summarized or persisted elsewhere.
+
+
+### Planned Java port
+Neither Ruby nor Python is my main language, so the next iteration will also include a Java port of the baseline agent. Java will provide a more familiar environment in which to review the design and will introduce a statically typed comparison for the interfaces between Context, Registry, provider backends, tools and the agent loop. If the same behaviour can be preserved across Ruby, Python and Java, it will provide stronger evidence that the architecture is portable and not an artifact of a specific language.
+
+
+## Technical Conclusions
+
+The hypothesis that the architecture can survive a language port was mostly confirmed. The Ruby and Python agents share the same functional boundaries even though they use different language idioms. Context, Registry, provider adapters, the agent loop, Logger and tool transport are the reusable architectural concepts. A Java port will provide a third point of comparison in a language I am more familiar with, and should expose assumptions hidden by the dynamic nature of both Ruby and Python.
+
+A model-driven decision loop still needs code-driven control. The model can select a tool and interpret its result, but the application must own tool discovery, schema validation, execution, error propagation, iteration budgets, token budgets, cancellation and lifecycle cleanup. This is the runtime architecture that was missing during Preweek.
+
+MCP is a good capability boundary. It removes domain tools from the core agent and allows the MUD adapter, filesystem access and future systems to evolve separately. It does not remove operational problems: servers can fail to start, connections can time out, tools can hang and a large tool inventory increases the prompt. Those failures must remain observable and bounded.
+
+The baseline is now capable of running a controlled agent turn and interacting with the live MUD, but it is not yet a capable autonomous player. Dropping old messages prevents context overflow but does not create reliable memory. The agent still needs structured world state, verification of state changes, loop detection across turns and explicit success conditions.
+
+
+### Ideas for next weeks
+- Prepare a Java port of the baseline while preserving the same component boundaries and observable behaviour.
+- Compare how static typing, interfaces, concurrency and lifecycle management affect the architecture in Java.
+- Add OpenTelemetry support for traces, metrics and logs. A single trace should follow an agent turn through model requests, reasoning, MCP tool calls and tool results, making latency, token usage, errors and cost observable across process boundaries.
+- Replace destructive context dropping with summarisation and structured long-term memory.
+- Keep rooms, exits, inventory, character status and action history outside the conversation transcript.
+- Add a verifier which compares the expected and actual result of every MUD action.
+- Add loop and repeated-failure detection across multiple turns.
+- Reduce the visible tool set according to the current task or game state.
+- Add explicit success, retry and terminal-failure predicates.
+- Replay JSONL traces in tests to compare providers and detect regressions.
+- Investigate recovery when an MCP server disconnects or a tool call blocks.
+- Measure the effect of tool descriptions and context compaction on model decisions.
