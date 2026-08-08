@@ -88,6 +88,7 @@ The baseline is now capable of running a controlled agent turn and interacting w
 
 ### Ideas for next weeks
 - Prepare a Java port of the baseline while preserving the same component boundaries and observable behaviour. 
+- Cleanup the repository. While the step by step buildup served as a working experiment, it was time consuming and resulted in a larger repository than needed. The repository should be ideally 3 implementations (Ruby, Python, Java) on step 12
 - Compare how static typing, interfaces, concurrency and lifecycle management affect the architecture in Java.
 - Add OpenTelemetry support for traces, metrics and logs. A single trace should follow an agent turn through model requests, reasoning, MCP tool calls and tool results, making latency, token usage, errors and cost observable across process boundaries.
 - Replace destructive context dropping with summarisation and structured long-term memory.
