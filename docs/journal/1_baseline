@@ -31,7 +31,8 @@ Based on the Preweek conclusions and [Ref 1]
 
 - Porting the agent to another language should expose accidental coupling. If the same architecture can be reproduced in Python without copying Ruby idioms literally, then the important part is the contracts between components and not the implementation language.
 
-- Building the agent incrementally should make the architecture easier to investigate. A complete coding agent contains too many interacting pieces to understand at once, while snapshots allow each new behaviour to be isolated.
+- Building the agent incrementally should make the architecture easier to investigate. A complete coding agent contains too many interacting pieces to understand at once, while snapshots allow each new behaviour to be isolated. However, this raises the potential risk of understanding each moving part, but not how each part interracts with each-other
+    - maybe the future Java port could be experimentally ran by "one shot" a migration via Codex, building the whole architecture in one go
 
 - Tools should not be compiled into the agent. A generic host which discovers tools from MCP servers should be easier to extend and safer to reason about than an agent containing filesystem, shell and MUD behaviour directly.
 
@@ -49,7 +50,7 @@ The central loop remained small in concept:
 
 Observe the current Context -> build a provider-specific request -> ask the model -> normalize the response -> execute requested tools -> append tool results -> repeat until completion or an execution limit
 
-Most of the complexity was outside that loop. Anthropic, OpenAI, Gemini, Ollama and Ollama Cloud use different request formats, tool schemas, stop reasons, usage fields and reasoning formats. A common internal response made the rest of the agent independent from these differences. This became especially visible when OpenAI had to move from Chat Completions to the Responses API.
+Most of the complexity was outside that loop. Anthropic, OpenAI, Gemini, Ollama and Ollama Cloud use different request formats, tool schemas, stop reasons, usage fields and reasoning formats. A common internal response made the rest of the agent independent from these differences. And this is one of the "problems" i saw with baseline - be design the focus was on code, and less on AI. This does however raise the unique oportunity to have working code that can be investigated further and expanded upon. 
 
 The Registry proved to be an important boundary. It gives the model a schema, maps a tool name back to executable code and returns failures as observations which the model can recover from. However, the first standard tool library coupled the agent to filesystem, shell and MUD implementations. Replacing those built-in tools with MCP changed Boukensha into a host: an empty MCP configuration can only talk, while capabilities are added by configuration and separate processes. Prefixes also prevent two servers from silently registering the same tool name.
 
@@ -71,7 +72,7 @@ The final baseline adds automatic compaction at 85 percent, a manual `/compact` 
 
 
 ### Planned Java port
-Neither Ruby nor Python is my main language, so the next iteration will also include a Java port of the baseline agent. Java will provide a more familiar environment in which to review the design and will introduce a statically typed comparison for the interfaces between Context, Registry, provider backends, tools and the agent loop. If the same behaviour can be preserved across Ruby, Python and Java, it will provide stronger evidence that the architecture is portable and not an artifact of a specific language.
+Neither Ruby nor Python is my main language, so the next iteration will also include a Java port of the baseline agent. This was probably a less optimal choice i made, not picking Java during the bootcamp. Java will provide a more familiar environment in which to review the design and will introduce a statically typed comparison for the interfaces between Context, Registry, provider backends, tools and the agent loop. If the same behaviour can be preserved across Ruby, Python and Java, it will provide stronger evidence that the architecture is portable and not an artifact of a specific language.
 
 
 ## Technical Conclusions
@@ -86,7 +87,7 @@ The baseline is now capable of running a controlled agent turn and interacting w
 
 
 ### Ideas for next weeks
-- Prepare a Java port of the baseline while preserving the same component boundaries and observable behaviour.
+- Prepare a Java port of the baseline while preserving the same component boundaries and observable behaviour. 
 - Compare how static typing, interfaces, concurrency and lifecycle management affect the architecture in Java.
 - Add OpenTelemetry support for traces, metrics and logs. A single trace should follow an agent turn through model requests, reasoning, MCP tool calls and tool results, making latency, token usage, errors and cost observable across process boundaries.
 - Replace destructive context dropping with summarisation and structured long-term memory.
